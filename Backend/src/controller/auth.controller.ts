@@ -5,9 +5,6 @@ import { createAccessToken, createRefreshToken } from "../utils/jwt.js";
 import jwt, { JwtPayload } from "jsonwebtoken"
 
 
-
-
-
 export const refreshAccessToken =(req:Request, res:Response)=>{
  
   try {
