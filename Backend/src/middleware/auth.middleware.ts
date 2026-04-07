@@ -1,7 +1,14 @@
 import { Request,Response,NextFunction } from "express"
 import jwt from "jsonwebtoken"
+import { any } from "zod"
+import { Params } from "zod/v4/core"
 
-export interface Authrequest extends Request {
+export interface Authrequest<
+    Params = any,
+    ResBody = any,
+    ReqBody = any,
+    ReqQuery = any
+> extends Request<Params,ResBody,ReqBody,ReqQuery> {
     user?:{
         userId:string
     }

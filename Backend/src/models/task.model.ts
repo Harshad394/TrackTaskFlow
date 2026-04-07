@@ -9,7 +9,7 @@ export interface ITask extends Document {
   owner: mongoose.Types.ObjectId;
 }
 
-const taskSchema = new Schema<ITask>(
+const taskSchema = new mongoose.Schema<ITask>(
   {
     title: {
       type: String,
