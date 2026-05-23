@@ -5,7 +5,7 @@ import  { Schema, Document } from "mongoose"
 export interface IActivity extends Document{
     user: mongoose.Types.ObjectId,
     task: mongoose.Types.ObjectId,
-    action: "created" | "updated" | "deleted",
+    action: "created" | "updated" | "moved" | "commented" | "time_logged" | "deleted",
     details?:string,
     createdAt:Date
 
@@ -23,12 +23,12 @@ const activitySchema = new mongoose.Schema<IActivity>({
     },
     action:{
         type:String,
-        enum: ["created","updated","deleted"],
+        enum: ["created","updated","moved","commented","time_logged","deleted"],
     },
     details:{
         type:String,
         required:false,
-        maxlength:25
+        maxlength:500
     }
 
 

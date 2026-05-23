@@ -1,70 +1,65 @@
-import mongoose, { Document, Schema} from "mongoose";
+import mongoose, { Document, Schema } from "mongoose";
 import bcrypt from "bcrypt";
 
 
-
-interface IUser extends Document  {
-    name:string,
-    email:string,
-    password:string,
-    role:"user"|"admin",
-    comparePassword(candidatePassword:string):Promise<boolean>;
-
+export interface IUser extends Document {
+  name: string;
+  email: string;
+  password: string;
+  role: "USER" | "SUPER_ADMIN";
+  comparePassword(candidatePassword: string): Promise<boolean>;
 }
 
-const userSchema = new Schema<IUser>({
-    name:{
-        required:true,
-        type:String,
-        unique:false,
-        minlength: 2,
-        maxlength: 50,
-
+const userSchema = new Schema<IUser>(
+  {
+    name: {
+      required: true,
+      type: String,
+      unique: false,
+      minlength: 2,
+      maxlength: 50,
+      trim: true,
     },
-    email:{
-        type: String,
-        required:true,
-        unique:true,
-        trim: true,
-        maxlength: 254,
-        lowercase:true,
+    email: {
+      type: String,
+      required: true,
+      unique: true,
+      trim: true,
+      maxlength: 254,
+      lowercase: true,
     },
-    password:{
-        required:true,
-        type:String,
-        trim:true,
-        minlength:8,
-        maxlength:128,
-        select:false,
+    password: {
+      required: true,
+      type: String,
+      trim: true,
+      minlength: 8,
+      maxlength: 128,
+      select: false,
     },
-    role:{
-        type:String,
-        enum:["user","admin"]
+    role: {
+      type: String,
+      enum: ["USER", "SUPER_ADMIN"],
+      default: "USER",
     },
-    
-},
-{
-    timestamps:true
-}
+  },
+  {
+    timestamps: true,
+  }
+);
 
-)
+userSchema.pre("save", async function () {
+  if (!this.isModified("password")) return;
 
-userSchema.pre("save",async function(){
-if(!this.isModified("password")) return;
+  this.password = await bcrypt.hash(this.password, 10);
+});
 
-this.password = await bcrypt.hash(this.password,10)
+userSchema.methods.comparePassword = async function (
+  candidatePassword: string
+): Promise<boolean> {
+  return bcrypt.compare(candidatePassword, this.password);
+};
 
-})
-
-userSchema.methods.comparePassword=async function(candidatePassword:string):Promise<boolean>{
-return bcrypt.compare(candidatePassword,this.password);
-}
-
-const User = mongoose.model<IUser>("User",userSchema);
+const User = mongoose.model<IUser>("User", userSchema);
 
 export default User;
 
-
-
-
-    

@@ -1,39 +1,48 @@
-import { Request,Response,NextFunction } from "express"
-import jwt from "jsonwebtoken"
-import { any } from "zod"
-import { Params } from "zod/v4/core"
+import { Request, Response, NextFunction } from "express";
+import jwt from "jsonwebtoken";
 
 export interface Authrequest<
-    Params = any,
-    ResBody = any,
-    ReqBody = any,
-    ReqQuery = any
-> extends Request<Params,ResBody,ReqBody,ReqQuery> {
-    user?:{
-        userId:string
-    }
+  Params = any,
+  ResBody = any,
+  ReqBody = any,
+  ReqQuery = any
+> extends Request<Params, ResBody, ReqBody, ReqQuery> {
+  user?: {
+    userId: string;
+  };
 }
 
-export const authMiddleware =async (req:Authrequest,res:Response,next:NextFunction)=>{
-    try {
-        const authHeader = req.headers.authorization;
-        if(!authHeader || !authHeader.startsWith("Bearer ")){
-            return res.status(401).json({message:"header dosent have header"})
-        }
-        const token = authHeader.split(" ")[1]
+export const authMiddleware = async (
+  req: Authrequest,
+  res: Response,
+  next: NextFunction
+) => {
+  try {
+    const authHeader = req.headers.authorization;
+    const bearerToken = authHeader?.startsWith("Bearer ")
+      ? authHeader.split(" ")[1]
+      : undefined;
+    const token = req.cookies?.accessToken || bearerToken;
 
-        const secrete = process.env.JWT_ACCESS_SECRET
-
-        if(!secrete){
-           return res.status(500).json({message:"env file does not provide jwt secrete"})
-        }
-
-        const decode =  jwt.verify(token,secrete) as {userid:string}
-
-        req.user = {userId:decode.userid}
-        next()
-        
-    } catch (error) {
-        return res.status(401).json({message:"internel server error"})
+    if (!token) {
+      return res.status(401).json({ message: "Authentication token missing" });
     }
-}
+
+    const secret = process.env.JWT_ACCESS_SECRET;
+
+    if (!secret) {
+      return res.status(500).json({ message: "JWT access secret not configured" });
+    }
+
+    const decoded = jwt.verify(token, secret) as { userId: string };
+
+    if (!decoded.userId) {
+      return res.status(401).json({ message: "Invalid authentication token" });
+    }
+
+    req.user = { userId: decoded.userId };
+    next();
+  } catch {
+    return res.status(401).json({ message: "Invalid or expired token" });
+  }
+};

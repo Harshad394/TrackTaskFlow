@@ -1,5 +1,5 @@
 import express from "express"
-import {register,login,refreshAccessToken, logout} from "../controller/auth.controller.js"
+import {register,login,refreshAccessToken, logout} from "../controllers/auth.controller.js"
 
 
 const router = express.Router()
@@ -15,6 +15,5 @@ router.get("/refresh",refreshAccessToken)
 
 
 export default router;
-
 
 

@@ -1,0 +1,12 @@
+import { Router } from "express";
+import { addProjectMember, createProject, getProject, listProjects, removeProjectMember, updateProject, updateProjectMember, } from "../controllers/project.controller.js";
+import { authMiddleware } from "../middleware/auth.middleware.js";
+const router = Router();
+router.post("/organizations/:organizationId/projects", authMiddleware, createProject);
+router.get("/organizations/:organizationId/projects", authMiddleware, listProjects);
+router.get("/projects/:projectId", authMiddleware, getProject);
+router.patch("/projects/:projectId", authMiddleware, updateProject);
+router.post("/projects/:projectId/members", authMiddleware, addProjectMember);
+router.patch("/projects/:projectId/members/:userId", authMiddleware, updateProjectMember);
+router.delete("/projects/:projectId/members/:userId", authMiddleware, removeProjectMember);
+export default router;
