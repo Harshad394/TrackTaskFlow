@@ -3,7 +3,11 @@ import mongoose, { Document, Schema } from "mongoose";
 export type NotificationType =
   | "task_assigned"
   | "task_commented"
-  | "task_moved";
+  | "task_moved"
+  | "task_approval_requested"
+  | "task_approved"
+  | "task_rejected"
+  | "task_comment_mention";
 
 export interface INotification extends Document {
   recipient: mongoose.Types.ObjectId;
@@ -44,7 +48,7 @@ const notificationSchema = new mongoose.Schema<INotification>(
     },
     type: {
       type: String,
-      enum: ["task_assigned", "task_commented", "task_moved"],
+      enum: ["task_assigned", "task_commented", "task_moved", "task_approval_requested", "task_approved", "task_rejected", "task_comment_mention"],
       required: true,
     },
     title: {

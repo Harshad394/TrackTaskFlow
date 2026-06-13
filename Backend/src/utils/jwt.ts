@@ -1,5 +1,11 @@
 import jwt from "jsonwebtoken";
 import { Response } from "express";
+import {
+  accessTokenCookieName,
+  accessTokenCookieOptions,
+  refreshTokenCookieName,
+  refreshTokenCookieOptions,
+} from "../config/cookies.js";
 
 export const createAccessToken = (userId: string, res: Response): string => {
   const secret = process.env.JWT_ACCESS_SECRET;
@@ -13,15 +19,11 @@ export const createAccessToken = (userId: string, res: Response): string => {
     { expiresIn: "15m" }
   );
 
-  res.cookie("accessToken", token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: 15 * 60 * 1000,
-  });
+  res.cookie(accessTokenCookieName, token, accessTokenCookieOptions);
 
   return token;
 };
+
 
 export const createRefreshToken = (userId: string, res: Response): string => {
   const secret = process.env.JWT_REFRESH_SECRET;
@@ -35,12 +37,7 @@ export const createRefreshToken = (userId: string, res: Response): string => {
     { expiresIn: "30d" }
   );
 
-  res.cookie("refreshToken", token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "strict",
-    maxAge: 30 * 24 * 60 * 60 * 1000,
-  });
+  res.cookie(refreshTokenCookieName, token, refreshTokenCookieOptions);
 
   return token;
 };

@@ -10,6 +10,9 @@ import {
   listSectionTasks,
   moveTask,
   updateTask,
+  requestApproval,
+  approveTask,
+  rejectTask,
 } from "../controllers/task.controller.js";
 import { authMiddleware } from "../middleware/auth.middleware.js";
 import {
@@ -65,7 +68,7 @@ router.get(
 router.get(
   "/tasks/:taskId/activity",
   authMiddleware,
-  requireTaskProjectRole(["ADMIN", "DEVELOPER", "QA", "CLIENT"]),
+  requireTaskProjectRole(["ADMIN", "DEVELOPER", "QA"]),
   listTaskActivities
 );
 
@@ -88,6 +91,32 @@ router.delete(
   authMiddleware,
   requireTaskProjectRole(["ADMIN"]),
   deleteTask
+);
+
+// ── Approval flow ────────────────────────────────────────────────────────────
+
+// ADMIN, DEVELOPER, QA can submit a task for client review
+router.patch(
+  "/tasks/:taskId/request-approval",
+  authMiddleware,
+  requireTaskProjectRole(["ADMIN", "DEVELOPER", "QA"]),
+  requestApproval
+);
+
+// CLIENT approves (handler also allows ADMIN override)
+router.patch(
+  "/tasks/:taskId/approve",
+  authMiddleware,
+  requireTaskProjectRole(["ADMIN", "DEVELOPER", "QA", "CLIENT"]),
+  approveTask
+);
+
+// CLIENT rejects with reason (handler also allows ADMIN override)
+router.patch(
+  "/tasks/:taskId/reject",
+  authMiddleware,
+  requireTaskProjectRole(["ADMIN", "DEVELOPER", "QA", "CLIENT"]),
+  rejectTask
 );
 
 export default router;

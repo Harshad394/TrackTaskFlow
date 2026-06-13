@@ -17,7 +17,7 @@ const router = Router();
 router.get(
   "/projects/:projectId/time-logs",
   authMiddleware,
-  requireProjectRole(["ADMIN", "DEVELOPER", "QA", "CLIENT"]),
+  requireProjectRole(["ADMIN"]),
   listProjectTimeLogs
 );
 
@@ -31,7 +31,7 @@ router.post(
 router.get(
   "/tasks/:taskId/time-logs",
   authMiddleware,
-  requireTaskProjectRole(["ADMIN", "DEVELOPER", "QA", "CLIENT"]),
+  requireTaskProjectRole(["ADMIN", "DEVELOPER", "QA"]),
   listTaskTimeLogs
 );
 

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { paginationSchema } from "./pagination.validator.js";
 
 export const createTimeLogSchema = z.object({
   minutes: z
@@ -13,7 +14,7 @@ export const createTimeLogSchema = z.object({
 
 export const updateTimeLogSchema = createTimeLogSchema.partial();
 
-export const timeLogFilterSchema = z.object({
+export const timeLogFilterSchema = paginationSchema.extend({
   user: z.string().trim().min(1).optional(),
   task: z.string().trim().min(1).optional(),
   billable: z.enum(["true", "false"]).optional(),

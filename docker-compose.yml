@@ -1,0 +1,70 @@
+version: '3.8'
+
+services:
+  # ── PostgreSQL Database ─────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: ttf_postgres
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres_password
+      POSTGRES_DB: tracktaskflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # ── Redis Server ────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: ttf_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # ── Backend Node API ────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./Backend
+      dockerfile: Dockerfile
+    container_name: ttf_backend
+    restart: always
+    ports:
+      - "5003:5003"
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      PORT: 5003
+      NODE_ENV: production
+      # We use the existing cloud Mongo Atlas connection string
+      MONGO_URI: mongodb+srv://TTFdb:Harshad394@tracktaskflow.wamhcxg.mongodb.net/
+      JWT_ACCESS_SECRET: LSLFHLWLL
+      JWT_REFRESH_SECRET: LSTORJE455
+      FRONTEND_ORIGINS: http://localhost:3000
+      # Redis and Postgres are pointed directly to their docker services
+      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://postgres:postgres_password@postgres:5432/tracktaskflow
+      COOKIE_SAME_SITE: lax
+      COOKIE_SECURE: "false"
+
+  # ── Next.js Frontend ────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:5003/api
+    container_name: ttf_frontend
+    restart: always
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -6,6 +6,7 @@ import {
   createSectionSchema,
   updateSectionSchema,
 } from "../validators/section.validator.js";
+import { invalidateBoardCache } from "../services/cache.service.js";
 
 export const createProjectSection = async (
   req: ProjectAuthRequest<{ projectId: string }>,
@@ -27,6 +28,9 @@ export const createProjectSection = async (
       project: req.params.projectId,
       createdBy: req.user.userId,
     });
+
+    // Invalidate board cache – a new column appeared
+    await invalidateBoardCache(req.params.projectId);
 
     return res.status(201).json({ section });
   } catch (error: any) {
@@ -78,6 +82,9 @@ export const updateSection = async (
       return res.status(404).json({ message: "Section not found" });
     }
 
+    // Invalidate board cache – column name/order changed
+    await invalidateBoardCache(section.project.toString());
+
     return res.status(200).json({ section });
   } catch (error: any) {
     if (error.name === "ZodError") {
@@ -113,6 +120,9 @@ export const deleteSection = async (
     if (!section) {
       return res.status(404).json({ message: "Section not found" });
     }
+
+    // Invalidate board cache – column removed
+    await invalidateBoardCache(section.project.toString());
 
     return res.status(204).send();
   } catch {

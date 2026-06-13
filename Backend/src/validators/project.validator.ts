@@ -27,6 +27,11 @@ export const addProjectMemberSchema = z.object({
   role: z.enum(["ADMIN", "DEVELOPER", "QA", "CLIENT"]),
 });
 
+export const inviteProjectMemberSchema = z.object({
+  email: z.string().email("A valid email is required"),
+  role: z.enum(["ADMIN", "DEVELOPER", "QA", "CLIENT"]),
+});
+
 export const updateProjectMemberSchema = z.object({
   role: z.enum(["ADMIN", "DEVELOPER", "QA", "CLIENT"]),
 });

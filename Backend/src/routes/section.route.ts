@@ -16,7 +16,7 @@ const router = Router();
 router.post(
   "/projects/:projectId/sections",
   authMiddleware,
-  requireProjectRole(["ADMIN", "DEVELOPER", "QA"]),
+  requireProjectRole(["ADMIN"]),
   createProjectSection
 );
 
@@ -30,7 +30,7 @@ router.get(
 router.patch(
   "/sections/:sectionId",
   authMiddleware,
-  requireSectionProjectRole(["ADMIN", "DEVELOPER", "QA"]),
+  requireSectionProjectRole(["ADMIN"]),
   updateSection
 );
 
@@ -42,4 +42,3 @@ router.delete(
 );
 
 export default router;
-

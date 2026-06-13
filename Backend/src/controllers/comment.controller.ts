@@ -5,54 +5,107 @@ import Comment from "../models/comment.model.js";
 import Notification from "../models/notification.model.js";
 import Task from "../models/task.model.js";
 import Project from "../models/project.model.js";
-import { Authrequest } from "../middleware/auth.middleware.js";
+import { Authrequest }        from "../middleware/auth.middleware.js";
 import { ProjectAuthRequest } from "../middleware/projectPermission.middleware.js";
 import {
   createCommentSchema,
   updateCommentSchema,
 } from "../validators/comment.validator.js";
+import { paginationSchema } from "../validators/pagination.validator.js";
+import { buildPaginationMeta, getPaginationOptions } from "../utils/pagination.js";
+import { logAuditEvent }    from "../services/audit.service.js";
+import { resolveMentions }  from "../services/mention.service.js";
 
 export const createTaskComment = async (
   req: ProjectAuthRequest<{ taskId: string }>,
   res: Response
 ) => {
   try {
-    if (!req.user?.userId || !req.task) {
+    if (!req.user?.userId || !req.task || !req.project) {
       return res.status(401).json({ message: "Unauthorized" });
     }
 
     const validatedData = createCommentSchema.parse(req.body);
 
+    // ── Resolve @mentions before creating the comment ─────────────────────────────
+    const mentionedIds = await resolveMentions(
+      validatedData.body,
+      req.project,
+      req.user.userId
+    );
+
     const comment = await Comment.create({
-      task: req.task._id,
-      project: req.task.project,
-      author: req.user.userId,
-      body: validatedData.body,
+      task:     req.task._id,
+      project:  req.task.project,
+      author:   req.user.userId,
+      body:     validatedData.body,
+      mentions: mentionedIds,
     });
 
     await Activity.create({
-      user: req.user.userId,
-      task: req.task._id,
+      user:   req.user.userId,
+      task:   req.task._id,
       action: "commented",
       details: "Comment added",
     });
 
+    // ── Notify assignee (existing behaviour) ────────────────────────────────────
     if (
       req.task.assignee &&
       req.task.assignee.toString() !== req.user.userId
     ) {
       await Notification.create({
         recipient: req.task.assignee,
-        actor: req.user.userId,
-        project: req.task.project,
-        task: req.task._id,
-        type: "task_commented",
-        title: "New comment",
-        message: `New comment on "${req.task.title}"`,
+        actor:     req.user.userId,
+        project:   req.task.project,
+        task:      req.task._id,
+        type:      "task_commented",
+        title:     "New comment",
+        message:   `New comment on "${req.task.title}"`,
       });
     }
 
-    return res.status(201).json({ comment });
+    // ── Notify mentioned project members ───────────────────────────────────────
+    if (mentionedIds.length > 0) {
+      // Skip any mentionee who is already the assignee (already notified above)
+      const assigneeStr = req.task.assignee?.toString();
+      const uniqueMentionees = mentionedIds.filter(
+        (id) => id.toString() !== assigneeStr
+      );
+
+      await Promise.all(
+        uniqueMentionees.map((recipientId) =>
+          Notification.create({
+            recipient: recipientId,
+            actor:     req.user!.userId,
+            project:   req.task!.project,
+            task:      req.task!._id,
+            type:      "task_comment_mention",
+            title:     "You were mentioned",
+            message:   `${req.user!.userId} mentioned you in a comment on "${req.task!.title}"`,
+          })
+        )
+      );
+    }
+
+    // Audit
+    void logAuditEvent({
+      actorUserId: req.user.userId,
+      projectId:   req.task.project.toString(),
+      taskId:      req.task._id.toString(),
+      action:      "comment:created",
+      entityType:  "comment",
+      entityId:    comment._id.toString(),
+      metadata:    {
+        taskTitle:   req.task.title,
+        mentionCount: mentionedIds.length,
+      },
+    });
+
+    // Return comment with mentions populated for immediate frontend use
+    const populated = await comment.populate("mentions", "name email");
+
+    return res.status(201).json({ comment: populated });
   } catch (error: any) {
     if (error.name === "ZodError") {
       return res.status(400).json({
@@ -70,12 +123,36 @@ export const listTaskComments = async (
   res: Response
 ) => {
   try {
-    const comments = await Comment.find({ task: req.params.taskId })
-      .sort({ createdAt: 1 })
-      .populate("author", "name email");
+    const pagination = paginationSchema.parse(req.query);
+    const { skip, limit } = getPaginationOptions(pagination.page, pagination.limit);
+    const query = { task: req.params.taskId };
 
-    return res.status(200).json({ comments });
-  } catch {
+    const [comments, total] = await Promise.all([
+      Comment.find(query)
+        .sort({ createdAt: 1 })
+        .skip(skip)
+        .limit(limit)
+        .populate("author",   "name email")
+        .populate("mentions", "name email"),
+      Comment.countDocuments(query),
+    ]);
+
+    return res.status(200).json({
+      pagination: buildPaginationMeta({
+        page: pagination.page,
+        limit: pagination.limit,
+        total,
+      }),
+      comments,
+    });
+  } catch (error: any) {
+    if (error.name === "ZodError") {
+      return res.status(400).json({
+        message: "Validation failed",
+        errors: error.errors,
+      });
+    }
+
     return res.status(500).json({ message: "Internal server error" });
   }
 };
@@ -169,6 +246,17 @@ export const deleteComment = async (
     }
 
     await comment.deleteOne();
+
+    // Audit: comment deleted
+    void logAuditEvent({
+      actorUserId: req.user.userId,
+      projectId:   task.project.toString(),
+      taskId:      task._id.toString(),
+      action:      "comment:deleted",
+      entityType:  "comment",
+      entityId:    comment._id.toString(),
+      metadata:    { taskId: task._id.toString() },
+    });
 
     return res.status(204).send();
   } catch {

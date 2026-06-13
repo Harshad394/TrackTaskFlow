@@ -10,6 +10,8 @@ import {
   timeLogFilterSchema,
   updateTimeLogSchema,
 } from "../validators/timeLog.validator.js";
+import { paginationSchema } from "../validators/pagination.validator.js";
+import { buildPaginationMeta, getPaginationOptions } from "../utils/pagination.js";
 
 const parseDate = (value: string, fieldName: string) => {
   const date = new Date(value);
@@ -74,17 +76,43 @@ export const listTaskTimeLogs = async (
   res: Response
 ) => {
   try {
-    const timeLogs = await TimeLog.find({ task: req.params.taskId })
-      .sort({ loggedAt: -1, createdAt: -1 })
-      .populate("user", "name email");
+    const pagination = paginationSchema.parse(req.query);
+    const { skip, limit } = getPaginationOptions(pagination.page, pagination.limit);
+    const query = { task: req.params.taskId };
 
-    const totalMinutes = timeLogs.reduce((total, log) => total + log.minutes, 0);
-    const billableMinutes = timeLogs.reduce((total, log) => {
+    const [timeLogs, total, allTimeLogs] = await Promise.all([
+      TimeLog.find(query)
+      .sort({ loggedAt: -1, createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate("user", "name email"),
+      TimeLog.countDocuments(query),
+      TimeLog.find(query).select("minutes billable"),
+    ]);
+
+    const totalMinutes = allTimeLogs.reduce((total, log) => total + log.minutes, 0);
+    const billableMinutes = allTimeLogs.reduce((total, log) => {
       return log.billable ? total + log.minutes : total;
     }, 0);
 
-    return res.status(200).json({ totalMinutes, billableMinutes, timeLogs });
-  } catch {
+    return res.status(200).json({
+      totalMinutes,
+      billableMinutes,
+      pagination: buildPaginationMeta({
+        page: pagination.page,
+        limit: pagination.limit,
+        total,
+      }),
+      timeLogs,
+    });
+  } catch (error: any) {
+    if (error.name === "ZodError") {
+      return res.status(400).json({
+        message: "Validation failed",
+        errors: error.errors,
+      });
+    }
+
     return res.status(500).json({ message: "Internal server error" });
   }
 };
@@ -137,13 +165,20 @@ export const listProjectTimeLogs = async (
       }
     }
 
-    const timeLogs = await TimeLog.find(query)
+    const { skip, limit } = getPaginationOptions(filters.page, filters.limit);
+    const [timeLogs, total, allTimeLogs] = await Promise.all([
+      TimeLog.find(query)
       .sort({ loggedAt: -1, createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
       .populate("user", "name email")
-      .populate("task", "title priority type");
+        .populate("task", "title priority type"),
+      TimeLog.countDocuments(query),
+      TimeLog.find(query).select("minutes billable"),
+    ]);
 
-    const totalMinutes = timeLogs.reduce((total, log) => total + log.minutes, 0);
-    const billableMinutes = timeLogs.reduce((total, log) => {
+    const totalMinutes = allTimeLogs.reduce((total, log) => total + log.minutes, 0);
+    const billableMinutes = allTimeLogs.reduce((total, log) => {
       return log.billable ? total + log.minutes : total;
     }, 0);
 
@@ -152,6 +187,11 @@ export const listProjectTimeLogs = async (
       billableMinutes,
       count: timeLogs.length,
       filters,
+      pagination: buildPaginationMeta({
+        page: filters.page,
+        limit: filters.limit,
+        total,
+      }),
       timeLogs,
     });
   } catch (error: any) {

@@ -11,8 +11,21 @@ import {
   moveTaskSchema,
   taskFilterSchema,
   updateTaskSchema,
+  requestApprovalSchema,
+  approveTaskSchema,
+  rejectTaskSchema,
 } from "../validators/task.validator.js";
 import { ProjectAuthRequest } from "../middleware/projectPermission.middleware.js";
+import { paginationSchema } from "../validators/pagination.validator.js";
+import { buildPaginationMeta, getPaginationOptions } from "../utils/pagination.js";
+import {
+  boardCacheKey,
+  cacheGet,
+  cacheSet,
+  invalidateBoardCache,
+  BOARD_CACHE_TTL,
+} from "../services/cache.service.js";
+import { logAuditEvent } from "../services/audit.service.js";
 
 const isProjectMember = (
   project: ProjectAuthRequest["project"],
@@ -91,6 +104,14 @@ export const createSectionTask = async (
       return res.status(400).json({ message: "Assignee is not a project member" });
     }
 
+    if (
+      validatedData.assignee &&
+      req.projectRole !== "ADMIN" &&
+      validatedData.assignee !== req.user.userId
+    ) {
+      return res.status(403).json({ message: "Only project admins can assign tasks to others" });
+    }
+
     const nextOrder =
       validatedData.order ??
       (await Task.countDocuments({ section: req.params.sectionId }));
@@ -118,6 +139,20 @@ export const createSectionTask = async (
       type: "task_assigned",
       title: "Task assigned",
       message: `You were assigned to "${task.title}"`,
+    });
+
+    // Invalidate board cache – a new task changes column content
+    await invalidateBoardCache(task.project.toString());
+
+    // Audit: task created
+    void logAuditEvent({
+      actorUserId: req.user.userId,
+      projectId:   task.project.toString(),
+      taskId:      task._id.toString(),
+      action:      "task:created",
+      entityType:  "task",
+      entityId:    task._id.toString(),
+      metadata:    { title: task.title, sectionId: req.params.sectionId },
     });
 
     return res.status(201).json({ message: "Task created successfully", task });
@@ -212,13 +247,28 @@ export const listProjectTasks = async (
       }
     }
 
-    const tasks = await Task.find(query)
+    const { skip, limit } = getPaginationOptions(filters.page, filters.limit);
+    const [tasks, total] = await Promise.all([
+      Task.find(query)
       .sort({ section: 1, order: 1, createdAt: 1 })
+        .skip(skip)
+        .limit(limit)
       .populate("section", "name order")
       .populate("assignee", "name email")
-      .populate("createdBy", "name email");
+        .populate("createdBy", "name email"),
+      Task.countDocuments(query),
+    ]);
 
-    return res.status(200).json({ count: tasks.length, filters, tasks });
+    return res.status(200).json({
+      count: tasks.length,
+      filters,
+      pagination: buildPaginationMeta({
+        page: filters.page,
+        limit: filters.limit,
+        total,
+      }),
+      tasks,
+    });
   } catch (error: any) {
     if (error.name === "ZodError") {
       return res.status(400).json({
@@ -240,13 +290,36 @@ export const listSectionTasks = async (
   res: Response
 ) => {
   try {
-    const tasks = await Task.find({ section: req.params.sectionId })
-      .sort({ order: 1, createdAt: 1 })
-      .populate("assignee", "name email")
-      .populate("createdBy", "name email");
+    const pagination = paginationSchema.parse(req.query);
+    const { skip, limit } = getPaginationOptions(pagination.page, pagination.limit);
+    const query = { section: req.params.sectionId };
 
-    return res.status(200).json({ tasks });
-  } catch {
+    const [tasks, total] = await Promise.all([
+      Task.find(query)
+      .sort({ order: 1, createdAt: 1 })
+        .skip(skip)
+        .limit(limit)
+      .populate("assignee", "name email")
+        .populate("createdBy", "name email"),
+      Task.countDocuments(query),
+    ]);
+
+    return res.status(200).json({
+      pagination: buildPaginationMeta({
+        page: pagination.page,
+        limit: pagination.limit,
+        total,
+      }),
+      tasks,
+    });
+  } catch (error: any) {
+    if (error.name === "ZodError") {
+      return res.status(400).json({
+        message: "Validation failed",
+        errors: error.errors,
+      });
+    }
+
     return res.status(500).json({ message: "Internal server error" });
   }
 };
@@ -256,12 +329,23 @@ export const getProjectBoard = async (
   res: Response
 ) => {
   try {
-    const sections = await Section.find({ project: req.params.projectId }).sort({
+    const { projectId } = req.params;
+    const cacheKey = boardCacheKey(projectId);
+
+    // ── Cache read ──────────────────────────────────────────────────────────
+    const cached = await cacheGet<{ board: unknown[] }>(cacheKey);
+    if (cached !== null) {
+      res.setHeader("X-Cache", "HIT");
+      return res.status(200).json(cached);
+    }
+
+    // ── DB query ────────────────────────────────────────────────────────────
+    const sections = await Section.find({ project: projectId }).sort({
       order: 1,
       createdAt: 1,
     });
 
-    const tasks = await Task.find({ project: req.params.projectId })
+    const tasks = await Task.find({ project: projectId })
       .sort({ section: 1, order: 1, createdAt: 1 })
       .populate("assignee", "name email")
       .populate("createdBy", "name email");
@@ -271,7 +355,13 @@ export const getProjectBoard = async (
       tasks: tasks.filter((task) => task.section.toString() === section._id.toString()),
     }));
 
-    return res.status(200).json({ board });
+    const payload = { board };
+
+    // ── Cache write (fire-and-forget; never blocks the response) ────────────
+    await cacheSet(cacheKey, payload, BOARD_CACHE_TTL);
+    res.setHeader("X-Cache", "MISS");
+
+    return res.status(200).json(payload);
   } catch {
     return res.status(500).json({ message: "Internal server error" });
   }
@@ -338,6 +428,14 @@ export const updateTask = async (
 
     const previousAssignee = existingTask.assignee?.toString();
 
+    if (
+      Object.prototype.hasOwnProperty.call(validatedData, "assignee") &&
+      req.projectRole !== "ADMIN" &&
+      validatedData.assignee !== req.user?.userId
+    ) {
+      return res.status(403).json({ message: "Only project admins can assign tasks to others" });
+    }
+
     const task = await Task.findByIdAndUpdate(
       req.params.taskId,
       { $set: validatedData },
@@ -366,6 +464,20 @@ export const updateTask = async (
         message: `You were assigned to "${task.title}"`,
       });
     }
+
+    // Invalidate board cache – task fields visible on the board changed
+    await invalidateBoardCache(task.project.toString());
+
+    // Audit: task updated
+    void logAuditEvent({
+      actorUserId: req.user?.userId ?? "",
+      projectId:   task.project.toString(),
+      taskId:      task._id.toString(),
+      action:      "task:updated",
+      entityType:  "task",
+      entityId:    task._id.toString(),
+      metadata:    { changes: validatedData },
+    });
 
     return res.status(200).json({ task });
   } catch (error: any) {
@@ -397,6 +509,20 @@ export const deleteTask = async (
       TimeLog.deleteMany({ task: task._id }),
       Notification.deleteMany({ task: task._id }),
     ]);
+
+    // Invalidate board cache – task no longer exists
+    await invalidateBoardCache(task.project.toString());
+
+    // Audit: task deleted
+    void logAuditEvent({
+      actorUserId: req.user?.userId ?? "",
+      projectId:   task.project.toString(),
+      taskId:      task._id.toString(),
+      action:      "task:deleted",
+      entityType:  "task",
+      entityId:    task._id.toString(),
+      metadata:    { title: task.title },
+    });
 
     return res.status(204).send();
   } catch {
@@ -494,6 +620,25 @@ export const moveTask = async (
       message: `"${req.task.title}" moved to ${targetSection.name}`,
     });
 
+    // Invalidate board cache – task positions across columns changed
+    await invalidateBoardCache(req.task.project.toString());
+
+    // Audit: task moved between sections
+    void logAuditEvent({
+      actorUserId: req.user.userId,
+      projectId:   req.task.project.toString(),
+      taskId:      req.task._id.toString(),
+      action:      "task:moved",
+      entityType:  "task",
+      entityId:    req.task._id.toString(),
+      metadata:    {
+        fromSectionId: sourceSectionId,
+        toSectionId:   targetSectionId,
+        toSectionName: targetSection.name,
+        newOrder:      validatedData.order,
+      },
+    });
+
     return res.status(200).json({ task: movedTask });
   } catch (error: any) {
     if (error.name === "ZodError") {
@@ -512,12 +657,35 @@ export const listTaskActivities = async (
   res: Response
 ) => {
   try {
-    const activities = await Activity.find({ task: req.params.taskId })
-      .sort({ createdAt: -1 })
-      .populate("user", "name email");
+    const pagination = paginationSchema.parse(req.query);
+    const { skip, limit } = getPaginationOptions(pagination.page, pagination.limit);
+    const query = { task: req.params.taskId };
 
-    return res.status(200).json({ activities });
-  } catch {
+    const [activities, total] = await Promise.all([
+      Activity.find(query)
+      .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate("user", "name email"),
+      Activity.countDocuments(query),
+    ]);
+
+    return res.status(200).json({
+      pagination: buildPaginationMeta({
+        page: pagination.page,
+        limit: pagination.limit,
+        total,
+      }),
+      activities,
+    });
+  } catch (error: any) {
+    if (error.name === "ZodError") {
+      return res.status(400).json({
+        message: "Validation failed",
+        errors: error.errors,
+      });
+    }
+
     return res.status(500).json({ message: "Internal server error" });
   }
 };
@@ -554,6 +722,263 @@ export const getProjectTaskStats = async (
       sectionCounts,
     });
   } catch {
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+// ─── Approval flow handlers ───────────────────────────────────────────────────
+
+/**
+ * PATCH /tasks/:taskId/request-approval
+ * Allowed roles: ADMIN, DEVELOPER, QA
+ * Marks a task as PENDING so CLIENT users can review it.
+ * Guards: task must not already be APPROVED or currently PENDING.
+ */
+export const requestApproval = async (
+  req: ProjectAuthRequest<{ taskId: string }>,
+  res: Response
+) => {
+  try {
+    if (!req.user?.userId || !req.task || !req.project) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    requestApprovalSchema.parse(req.body);
+
+    const { task, project } = req;
+
+    if (task.approvalStatus === "APPROVED") {
+      return res.status(409).json({ message: "Task is already approved" });
+    }
+
+    if (task.approvalStatus === "PENDING") {
+      return res.status(409).json({ message: "Approval has already been requested" });
+    }
+
+    task.approvalStatus = "PENDING";
+    task.approvedBy     = undefined;
+    task.approvedAt     = undefined;
+    task.rejectionReason = undefined;
+    await task.save();
+
+    await Activity.create({
+      user:    req.user.userId,
+      task:    task._id,
+      action:  "approval_requested",
+      details: "Approval requested",
+    });
+
+    // Notify every CLIENT in the project
+    const clientIds = project.members
+      .filter((m) => m.role === "CLIENT" && m.userId.toString() !== req.user!.userId)
+      .map((m) => m.userId);
+
+    await Promise.all(
+      clientIds.map((clientId) =>
+        Notification.create({
+          recipient: clientId,
+          actor:     req.user!.userId,
+          project:   task.project,
+          task:      task._id,
+          type:      "task_approval_requested",
+          title:     "Approval requested",
+          message:   `"${task.title}" is ready for your review`,
+        })
+      )
+    );
+
+    // Invalidate board cache – approvalStatus is visible on board cards
+    await invalidateBoardCache(task.project.toString());
+
+    void logAuditEvent({
+      actorUserId: req.user.userId,
+      projectId:   task.project.toString(),
+      taskId:      task._id.toString(),
+      action:      "task:updated",
+      entityType:  "task",
+      entityId:    task._id.toString(),
+      metadata:    { approvalStatus: "PENDING" },
+    });
+
+    return res.status(200).json({ message: "Approval requested", task });
+  } catch (error: any) {
+    if (error.name === "ZodError") {
+      return res.status(400).json({ message: "Validation failed", errors: error.errors });
+    }
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+/**
+ * PATCH /tasks/:taskId/approve
+ * Allowed roles: CLIENT (own approval), ADMIN (override)
+ * Marks a task as APPROVED and stamps approvedBy + approvedAt.
+ */
+export const approveTask = async (
+  req: ProjectAuthRequest<{ taskId: string }>,
+  res: Response
+) => {
+  try {
+    if (!req.user?.userId || !req.task || !req.project) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    approveTaskSchema.parse(req.body);
+
+    const { task, project } = req;
+    const isAdmin  = req.projectRole === "ADMIN";
+    const isClient = req.projectRole === "CLIENT";
+
+    if (!isAdmin && !isClient) {
+      return res.status(403).json({ message: "Only CLIENT or ADMIN can approve tasks" });
+    }
+
+    // CLIENTs can only approve tasks that have been submitted for review
+    if (isClient && task.approvalStatus !== "PENDING") {
+      return res.status(409).json({
+        message: "Task must be in PENDING status before it can be approved",
+      });
+    }
+
+    task.approvalStatus  = "APPROVED";
+    task.approvedBy      = new mongoose.Types.ObjectId(req.user.userId);
+    task.approvedAt      = new Date();
+    task.rejectionReason = undefined;
+    await task.save();
+
+    await Activity.create({
+      user:    req.user.userId,
+      task:    task._id,
+      action:  "approved",
+      details: isAdmin ? "Approved by admin" : "Approved by client",
+    });
+
+    // Notify the task creator (and assignee if different)
+    const notifyIds = Array.from(
+      new Set(
+        [task.createdBy?.toString(), task.assignee?.toString()]
+          .filter((id): id is string => Boolean(id) && id !== req.user!.userId)
+      )
+    );
+
+    await Promise.all(
+      notifyIds.map((recipientId) =>
+        Notification.create({
+          recipient: recipientId,
+          actor:     req.user!.userId,
+          project:   task.project,
+          task:      task._id,
+          type:      "task_approved",
+          title:     "Task approved",
+          message:   `"${task.title}" was approved`,
+        })
+      )
+    );
+
+    await invalidateBoardCache(task.project.toString());
+
+    void logAuditEvent({
+      actorUserId: req.user.userId,
+      projectId:   task.project.toString(),
+      taskId:      task._id.toString(),
+      action:      "task:updated",
+      entityType:  "task",
+      entityId:    task._id.toString(),
+      metadata:    { approvalStatus: "APPROVED", override: isAdmin },
+    });
+
+    return res.status(200).json({ message: "Task approved", task });
+  } catch (error: any) {
+    if (error.name === "ZodError") {
+      return res.status(400).json({ message: "Validation failed", errors: error.errors });
+    }
+    return res.status(500).json({ message: "Internal server error" });
+  }
+};
+
+/**
+ * PATCH /tasks/:taskId/reject
+ * Allowed roles: CLIENT (own rejection), ADMIN (override)
+ * Marks a task as REJECTED and records the rejectionReason.
+ */
+export const rejectTask = async (
+  req: ProjectAuthRequest<{ taskId: string }>,
+  res: Response
+) => {
+  try {
+    if (!req.user?.userId || !req.task || !req.project) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const { rejectionReason } = rejectTaskSchema.parse(req.body);
+
+    const { task } = req;
+    const isAdmin  = req.projectRole === "ADMIN";
+    const isClient = req.projectRole === "CLIENT";
+
+    if (!isAdmin && !isClient) {
+      return res.status(403).json({ message: "Only CLIENT or ADMIN can reject tasks" });
+    }
+
+    // CLIENTs can only reject tasks that are in PENDING status
+    if (isClient && task.approvalStatus !== "PENDING") {
+      return res.status(409).json({
+        message: "Task must be in PENDING status before it can be rejected",
+      });
+    }
+
+    task.approvalStatus  = "REJECTED";
+    task.rejectionReason = rejectionReason;
+    task.approvedBy      = undefined;
+    task.approvedAt      = undefined;
+    await task.save();
+
+    await Activity.create({
+      user:    req.user.userId,
+      task:    task._id,
+      action:  "rejected",
+      details: `Rejected: ${rejectionReason}`,
+    });
+
+    // Notify the task creator (and assignee if different)
+    const notifyIds = Array.from(
+      new Set(
+        [task.createdBy?.toString(), task.assignee?.toString()]
+          .filter((id): id is string => Boolean(id) && id !== req.user!.userId)
+      )
+    );
+
+    await Promise.all(
+      notifyIds.map((recipientId) =>
+        Notification.create({
+          recipient: recipientId,
+          actor:     req.user!.userId,
+          project:   task.project,
+          task:      task._id,
+          type:      "task_rejected",
+          title:     "Task rejected",
+          message:   `"${task.title}" was rejected: ${rejectionReason}`,
+        })
+      )
+    );
+
+    await invalidateBoardCache(task.project.toString());
+
+    void logAuditEvent({
+      actorUserId: req.user.userId,
+      projectId:   task.project.toString(),
+      taskId:      task._id.toString(),
+      action:      "task:updated",
+      entityType:  "task",
+      entityId:    task._id.toString(),
+      metadata:    { approvalStatus: "REJECTED", rejectionReason, override: isAdmin },
+    });
+
+    return res.status(200).json({ message: "Task rejected", task });
+  } catch (error: any) {
+    if (error.name === "ZodError") {
+      return res.status(400).json({ message: "Validation failed", errors: error.errors });
+    }
     return res.status(500).json({ message: "Internal server error" });
   }
 };

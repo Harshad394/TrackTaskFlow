@@ -2,32 +2,55 @@ import { Request, Response } from "express";
 import User from "../models/user.model.js";
 import { registerSchema, loginSchema } from "../validators/auth.validator.js";
 import { createAccessToken, createRefreshToken } from "../utils/jwt.js";
-import jwt, { JwtPayload } from "jsonwebtoken"
+import { acceptPendingProjectInvitationsForUser } from "../services/projectMembership.service.js";
+import {
+  accessTokenCookieName,
+  clearAuthCookieOptions,
+  refreshTokenCookieName,
+} from "../config/cookies.js";
+import jwt from "jsonwebtoken";
+import { logAuditEvent } from "../services/audit.service.js";
 
 
-export const refreshAccessToken =(req:Request, res:Response)=>{
- 
+const formatUserResponse = (user: any) => {
+  return {
+    id: user._id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+  };
+};
+
+export const refreshAccessToken = async (req:Request, res:Response)=>{
   try {
-    const refreshToken = req.cookies.refreshToken
-  if(!refreshToken){
-   return res.status(401).json({message:"cookies dosent provide token"})
-  }
-  const refreshSecret = process.env.JWT_REFRESH_SECRET
+    const refreshToken = req.cookies?.[refreshTokenCookieName];
+    if(!refreshToken){
+      return res.status(401).json({message:"Refresh token missing"})
+    }
 
-  if(!refreshSecret){
-   return res.status(500).json({message:"JWT_REFRESH_SECRET not provided"})
-  }
-  const decoded = jwt.verify(refreshToken,refreshSecret) as {userId:string};
-  
-  createAccessToken(decoded.userId,res)
-  return res.status(200).json({message:"acess token refresh"})
+    const refreshSecret = process.env.JWT_REFRESH_SECRET
 
+    if(!refreshSecret){
+      return res.status(500).json({message:"JWT_REFRESH_SECRET not provided"})
+    }
 
+    const decoded = jwt.verify(refreshToken,refreshSecret) as {userId:string};
+    const user = await User.findById(decoded.userId);
+
+    if (!user) {
+      res.clearCookie(accessTokenCookieName, clearAuthCookieOptions);
+      res.clearCookie(refreshTokenCookieName, clearAuthCookieOptions);
+      return res.status(401).json({ message: "Refresh token user not found" });
+    }
+
+    createAccessToken(decoded.userId,res)
+    return res.status(200).json({
+      message:"Access token refreshed",
+      user: formatUserResponse(user),
+    })
   }catch (error) {
     return res.status(401).json({ message: "Invalid or expired refresh token" });
   }
-
-
 }
 
 export const register = async (req: Request, res: Response) => {
@@ -47,17 +70,27 @@ export const register = async (req: Request, res: Response) => {
       role,
     });
 
+    const acceptedInvitations = await acceptPendingProjectInvitationsForUser({
+      userId: user._id.toString(),
+      email: user.email,
+    });
+
     createAccessToken(user.id, res);
     createRefreshToken(user.id, res);
 
+    // Audit: new account created
+    void logAuditEvent({
+      actorUserId: user._id.toString(),
+      action: "auth:register",
+      entityType: "user",
+      entityId: user._id.toString(),
+      metadata: { email: user.email, name: user.name },
+    });
+
     return res.status(201).json({
       message: "User registered successfully",
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-      },
+      user: formatUserResponse(user),
+      acceptedInvitations: acceptedInvitations.length,
     });
   } catch (error: any) {
     if (error.name === "ZodError") {
@@ -70,6 +103,8 @@ export const register = async (req: Request, res: Response) => {
     return res.status(500).json({ message: "Internal server error" });
   }
 };
+
+
 
 export const login = async (req: Request, res: Response) => {
   try {
@@ -89,14 +124,18 @@ export const login = async (req: Request, res: Response) => {
     createAccessToken(user.id, res);
     createRefreshToken(user.id, res);
 
+    // Audit: successful login
+    void logAuditEvent({
+      actorUserId: user._id.toString(),
+      action: "auth:login",
+      entityType: "user",
+      entityId: user._id.toString(),
+      metadata: { email: user.email },
+    });
+
     return res.status(200).json({
       message: "Login successful",
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-      },
+      user: formatUserResponse(user),
     });
   } catch (error: any) {
     if (error.name === "ZodError") {
@@ -112,17 +151,31 @@ export const login = async (req: Request, res: Response) => {
 
 export const logout = (req: Request, res: Response) => {
   try {
-    res.clearCookie("accessToken", {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-    });
+    // Decode the access token before clearing cookies so we can audit who logged out.
+    // Failures are silently ignored – the logout itself always succeeds.
+    const token =
+      req.cookies?.[accessTokenCookieName] ??
+      req.headers.authorization?.split(" ")[1];
 
-    res.clearCookie("refreshToken", {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "strict",
-    });
+    if (token) {
+      try {
+        const secret = process.env.JWT_ACCESS_SECRET;
+        if (secret) {
+          const decoded = jwt.verify(token, secret) as { userId: string };
+          void logAuditEvent({
+            actorUserId: decoded.userId,
+            action: "auth:logout",
+            entityType: "user",
+            entityId: decoded.userId,
+          });
+        }
+      } catch {
+        // Expired/invalid token – still log out, just skip audit
+      }
+    }
+
+    res.clearCookie(accessTokenCookieName, clearAuthCookieOptions);
+    res.clearCookie(refreshTokenCookieName, clearAuthCookieOptions);
 
     return res.status(200).json({ message: "Logged out successfully" });
   } catch {

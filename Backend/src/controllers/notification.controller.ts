@@ -3,6 +3,7 @@ import mongoose from "mongoose";
 import Notification from "../models/notification.model.js";
 import { Authrequest } from "../middleware/auth.middleware.js";
 import { notificationFilterSchema } from "../validators/notification.validator.js";
+import { buildPaginationMeta, getPaginationOptions } from "../utils/pagination.js";
 
 export const listNotifications = async (req: Authrequest, res: Response) => {
   try {
@@ -21,12 +22,17 @@ export const listNotifications = async (req: Authrequest, res: Response) => {
       query.type = filters.type;
     }
 
-    const notifications = await Notification.find(query)
+    const { skip, limit } = getPaginationOptions(filters.page, filters.limit);
+    const [notifications, total] = await Promise.all([
+      Notification.find(query)
       .sort({ createdAt: -1 })
-      .limit(50)
+        .skip(skip)
+        .limit(limit)
       .populate("actor", "name email")
       .populate("project", "name key")
-      .populate("task", "title priority type");
+        .populate("task", "title priority type"),
+      Notification.countDocuments(query),
+    ]);
 
     const unreadCount = await Notification.countDocuments({
       recipient: req.user.userId,
@@ -36,6 +42,11 @@ export const listNotifications = async (req: Authrequest, res: Response) => {
     return res.status(200).json({
       unreadCount,
       count: notifications.length,
+      pagination: buildPaginationMeta({
+        page: filters.page,
+        limit: filters.limit,
+        total,
+      }),
       notifications,
     });
   } catch (error: any) {

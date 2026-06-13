@@ -2,6 +2,7 @@ import mongoose, { Document, Schema } from "mongoose";
 
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
 export type TaskType = "task" | "bug" | "feature";
+export type TaskApprovalStatus = "NOT_REQUIRED" | "PENDING" | "APPROVED" | "REJECTED";
 
 export interface ITask extends Document {
   title: string;
@@ -15,6 +16,13 @@ export interface ITask extends Document {
   labels: string[];
   order: number;
   dueDate?: Date;
+  // ── Sprint ──────────────────────────────────────────────────────────────────
+  sprint?: mongoose.Types.ObjectId;
+  // ── Approval flow ───────────────────────────────────────────────────────────
+  approvalStatus: TaskApprovalStatus;
+  approvedBy?: mongoose.Types.ObjectId;
+  approvedAt?: Date;
+  rejectionReason?: string;
 }
 
 const taskSchema = new mongoose.Schema<ITask>(
@@ -89,6 +97,34 @@ const taskSchema = new mongoose.Schema<ITask>(
     dueDate: {
       type: Date,
     },
+
+    // ── Sprint ────────────────────────────────────────────────────────────────
+    sprint: {
+      type:  Schema.Types.ObjectId,
+      ref:   "Sprint",
+    },
+
+    // ── Approval flow ─────────────────────────────────────────────────────────
+    approvalStatus: {
+      type: String,
+      enum: ["NOT_REQUIRED", "PENDING", "APPROVED", "REJECTED"],
+      default: "NOT_REQUIRED",
+    },
+
+    approvedBy: {
+      type: Schema.Types.ObjectId,
+      ref: "User",
+    },
+
+    approvedAt: {
+      type: Date,
+    },
+
+    rejectionReason: {
+      type: String,
+      trim: true,
+      maxlength: 500,
+    },
   },
   {
     timestamps: true,
@@ -98,6 +134,8 @@ const taskSchema = new mongoose.Schema<ITask>(
 taskSchema.index({ project: 1, section: 1, order: 1 });
 taskSchema.index({ project: 1, assignee: 1 });
 taskSchema.index({ project: 1, labels: 1 });
+taskSchema.index({ approvalStatus: 1 }, { sparse: true });
+taskSchema.index({ sprint: 1 },         { sparse: true });
 
 const Task = mongoose.model<ITask>("Task", taskSchema);
 export default Task;

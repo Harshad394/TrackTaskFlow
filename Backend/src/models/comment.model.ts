@@ -1,10 +1,11 @@
 import mongoose, { Document, Schema } from "mongoose";
 
 export interface IComment extends Document {
-  task: mongoose.Types.ObjectId;
-  project: mongoose.Types.ObjectId;
-  author: mongoose.Types.ObjectId;
-  body: string;
+  task:     mongoose.Types.ObjectId;
+  project:  mongoose.Types.ObjectId;
+  author:   mongoose.Types.ObjectId;
+  body:     string;
+  mentions: mongoose.Types.ObjectId[];   // resolved @mentioned project member IDs
   createdAt: Date;
   updatedAt: Date;
 }
@@ -34,6 +35,12 @@ const commentSchema = new mongoose.Schema<IComment>(
       minlength: 1,
       maxlength: 2000,
       trim: true,
+    },
+
+    mentions: {
+      type:    [Schema.Types.ObjectId],
+      ref:     "User",
+      default: [],
     },
   },
   {

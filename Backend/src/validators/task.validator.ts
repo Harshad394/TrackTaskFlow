@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { paginationSchema } from "./pagination.validator.js";
 
 
 export const createTaskSchema = z.object({
@@ -56,7 +57,7 @@ export const moveTaskSchema = z.object({
   order: z.number().min(0, "Order must be zero or greater"),
 });
 
-export const taskFilterSchema = z.object({
+export const taskFilterSchema = paginationSchema.extend({
   q: z.string().trim().min(1).max(100).optional(),
   assignee: z.string().trim().min(1).optional(),
   createdBy: z.string().trim().min(1).optional(),
@@ -66,4 +67,24 @@ export const taskFilterSchema = z.object({
   labels: z.union([z.string().trim().min(1), z.array(z.string().trim().min(1))]).optional(),
   dueFrom: z.string().trim().min(1).optional(),
   dueTo: z.string().trim().min(1).optional(),
+});
+
+// ─── Approval flow schemas ────────────────────────────────────────────────────
+
+/**
+ * No body required for request-approval — the action itself is sufficient.
+ * Accept (and ignore) any extra fields for forward-compatibility.
+ */
+export const requestApprovalSchema = z.object({}).passthrough();
+
+/** CLIENT or ADMIN calls this; no body needed. */
+export const approveTaskSchema = z.object({}).passthrough();
+
+/** rejectionReason is required so the team always knows why it was rejected. */
+export const rejectTaskSchema = z.object({
+  rejectionReason: z
+    .string()
+    .trim()
+    .min(1, "Rejection reason is required")
+    .max(500, "Rejection reason must not exceed 500 characters"),
 });
