@@ -40,11 +40,11 @@ services:
     environment:
       PORT: 5003
       NODE_ENV: production
-      # We use the existing cloud Mongo Atlas connection string
-      MONGO_URI: mongodb+srv://TTFdb:Harshad394@tracktaskflow.wamhcxg.mongodb.net/
-      JWT_ACCESS_SECRET: LSLFHLWLL
-      JWT_REFRESH_SECRET: LSTORJE455
-      FRONTEND_ORIGINS: http://localhost:3000
+      # Loaded dynamically from your local environment or .env file
+      MONGO_URI: ${MONGO_URI}
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      FRONTEND_ORIGINS: ${FRONTEND_ORIGINS:-http://localhost:3000}
       # Redis and Postgres are pointed directly to their docker services
       REDIS_URL: redis://redis:6379
       DATABASE_URL: postgresql://postgres:postgres_password@postgres:5432/tracktaskflow
